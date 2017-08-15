@@ -11,7 +11,19 @@ import time
 
 import datetime
 
-from cassandra.cluster import Cluster
+locationsConfig = {
+    "Endpoint" : os.environ["LOCATIONS_COSMOSDB_HOST"],
+    "Masterkey" : os.environ["LOCATIONS_COSMOSDB_AUTH_KEY"],
+    "Database" : "locationsdb",
+    "Collection" : "locations"
+}
+
+heatmapsConfig = {
+    "Endpoint" : os.environ["LOCATIONS_COSMOSDB_HOST"],
+    "Masterkey" : os.environ["LOCATIONS_COSMOSDB_AUTH_KEY"],
+    "Database" : "locationsdb",
+    "Collection" : "heatmaps"
+}
 
 #from pyspark.streaming import StreamingContext
 #from pyspark.streaming.kafka import KafkaUtils
@@ -30,7 +42,7 @@ def dataframe_loader(row):
     return {
         "tileId": tileId,
         "timestamp": row["timestamp"],
-        "userId": row["user_id"],
+        "userId": row["userId"],
         "count": 1.0
     }
 
@@ -107,7 +119,7 @@ def heatmap_to_locations(bucket):
 # spark-submit --packages datastax:spark-cassandra-connector:2.0.1-s_2.11 --py-files tile.py heatmap.py
 # export CASSANDRA_ENDPOINT='cassandra-cassandra.cassandra.svc.cluster.local'
 # export KAFKA_ENDPOINT='zookeeper.kafka.svc.cluster.local'
-# export LOCATIONS_COSMOSDB_AUTH_KEY='L1SpNwr9BNVAAKgovnr50bZhc8t9HMvyD9sLbxNhJ9kz8Jn0kJIdAFLIdVHgHKe0Ce9dBOSwnF9juiDSAwVUaA=='
+# export LOCATIONS_COSMOSDB_AUTH_KEY='L1SpNwr9BNVAAKgovnr50bZhc8t9HMvyD9sLbxNhJ9kz8Jn0kJIdAFLIdVHgHKe0Ce9dBOSwnF9juiDSAwVUaA==';
 # export LOCATIONS_COSMOSDB_HOST='https://rhom-locations-db.documents.azure.com:443/'
 # spark-submit --packages org.apache.spark:spark-streaming-kafka-0-8_2.11:2.0.2,datastax:spark-cassandra-connector:2.0.1-s_2.11 --py-files tile.py heatmap.py
 # spark-submit --jars azure-cosmosdb-spark-0.0.3-SNAPSHOT.jar,azure-documentdb-1.10.0.jar,json-20140107.jar --py-files tile.py heatmapCosmosDB.py
@@ -133,48 +145,16 @@ def list_to_dict(heatmapList):
         heatmap[tileId] = count
     return heatmap
 
-def heatmap_to_json(heatmap):
-    return json.dumps(heatmap)
-
-def get_rows(sc):
-    if os.environ["LOCATION_CASSANDRA_ENDPOINT"]:
-        sc.stop()
-        conf = SparkConf(True).set("spark.cassandra.connection.host", os.environ["LOCATION_CASSANDRA_ENDPOINT"])
-        sc = SparkContext(conf=conf)
-        sqlContext = SQLContext(sc)
-        rows = sqlContext.read.format("org.apache.spark.sql.cassandra").options(table="locations", keyspace="rhom").load()
-    else:
-        sqlContext = SQLContext(sc)
-        locationsConfig = {
-            "Endpoint" : os.environ["LOCATIONS_COSMOSDB_HOST"],
-            "Masterkey" : os.environ["LOCATIONS_COSMOSDB_AUTH_KEY"],
-            "Database" : "locationsdb",
-            "Collection" : "locations"
-        }
-        rows = sqlContext.read.format("com.microsoft.azure.cosmosdb.spark").options(**locationsConfig).load()  
-    return sqlContext, rows  
-
-def write_heatmap_dataframes(heatmapDataFrames):
-    # if "LOCATIONS_COSMOSDB_HOST" in os.environ:
-    #    heatmapsConfig = {
-    #        "Endpoint" : os.environ["LOCATIONS_COSMOSDB_HOST"],
-    #        "Masterkey" : os.environ["LOCATIONS_COSMOSDB_AUTH_KEY"],
-    #        "Database" : "locationsdb",
-    #        "Collection" : "heatmaps"
-    #    }
-    #
-    #    heatmapDataFrames.write.format("com.microsoft.azure.cosmosdb.spark").mode('overwrite').options(**heatmapsConfig).save()
-
-    if "LOCATION_CASSANDRA_ENDPOINT" in os.environ:
-        heatmapDataFrames.write.format("org.apache.spark.sql.cassandra").mode('append').options(table='heatmaps',keyspace='rhom').save()
+#def heatmap_to_json(heatmap):
+#    return json.dumps(heatmap)
 
 def batchMain(sc):
-    sqlContext, rows = get_rows(sc)
+    sqlContext = SQLContext(sc)
+    rows = sqlContext.read.format("com.microsoft.azure.cosmosdb.spark").options(**locationsConfig).load()
     locations = rows.rdd.map(dataframe_loader)
     heatmaps = build_heatmaps(locations)
-    heatmapsMaterialized = heatmaps.mapValues(heatmap_to_json)
-    heatmapDataFrames = sqlContext.createDataFrame(heatmapsMaterialized, ['id','heatmap'])
-    return write_heatmap_dataframes(heatmapDataFrames)
+    heatmapDataFrames = sqlContext.createDataFrame(heatmaps, ['id','heatmap'])
+    heatmapDataFrames.write.format("com.microsoft.azure.cosmosdb.spark").mode('overwrite').options(**heatmapsConfig).save()
 
 def kafka_json_loader(tuple):
     try:
@@ -206,7 +186,7 @@ def merge_partial_heatmap(session, heatmapPartial):
     session.execute("INSERT INTO rhom.heatmaps (id, heatmap) VALUES (%s, %s)", (id, json.dumps(mergedHeatmap)))
 
 def merge_partial_heatmap_rdd(heatmapPartialRDD):
-    cluster = Cluster([os.environ["LOCATION_CASSANDRA_ENDPOINT"]])
+    cluster = Cluster([CASSANDRA_ENDPOINT])
     session = cluster.connect()
     for heatmapPartial in heatmapPartialRDD.collect():
         merge_partial_heatmap(session, heatmapPartial)
