@@ -3,4 +3,4 @@
 #export LOCATION_CASSANDRA_ENDPOINT='cassandra-cassandra.cassandra.svc.cluster.local'
 export LOCATIONS_COSMOSDB_AUTH_KEY='L1SpNwr9BNVAAKgovnr50bZhc8t9HMvyD9sLbxNhJ9kz8Jn0kJIdAFLIdVHgHKe0Ce9dBOSwnF9juiDSAwVUaA=='
 export LOCATIONS_COSMOSDB_HOST='https://rhom-locations-db.documents.azure.com:443/'
-spark-submit --master spark://spark-master:6066 --num-executors 23 --executor-cores 1 --executor-memory 4g --packages org.apache.spark:spark-streaming-kafka-0-8_2.11:2.0.2,datastax:spark-cassandra-connector:2.0.1-s_2.11 --jars azure-cosmosdb-spark_2.2.0_2.11-0.0.3.jar,azure-documentdb-1.12.0.jar,azure-documentdb-rx-0.9.0-rc1.jar,json-20140107.jar --py-files tile.py heatmapCosmosDB.py
+spark-submit --master spark://spark-master.spark2.svc.cluster.local:6066 --num-executors 23 --executor-cores 1 --executor-memory 4g --packages org.apache.spark:spark-streaming-kafka-0-8_2.11:2.0.2,datastax:spark-cassandra-connector:2.0.1-s_2.11 --jars azure-cosmosdb-spark_2.2.0_2.11-0.0.3.jar,azure-documentdb-1.12.0.jar,azure-documentdb-rx-0.9.0-rc1.jar,json-20140107.jar --py-files tile.py heatmapCosmosDB.py
