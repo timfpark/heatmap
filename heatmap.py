@@ -13,10 +13,6 @@ import datetime
 
 from cassandra.cluster import Cluster
 
-#from pyspark.streaming import StreamingContext
-#from pyspark.streaming.kafka import KafkaUtils
-
-MICROBATCH_FREQUENCY_SECONDS = 15
 DETAIL_ZOOM_DELTA = 5
 MAX_ZOOM_LEVEL = 16
 KEY_SEPERATOR = "|"
@@ -24,15 +20,20 @@ KEY_SEPERATOR = "|"
 KEY_FIELD = 0
 VALUE_FIELD = 1
 
+LOCATION_CASSANDRA_ENDPOINT="10.1.0.11"
+
 def dataframe_loader(row):
     # "timestamp": calendar.timegm(row["timestamp"].utctimetuple()) * 1000,
     tileId = Tile.tile_id_from_lat_long(row["latitude"], row["longitude"], MAX_ZOOM_LEVEL + DETAIL_ZOOM_DELTA)
-    return {
-        "tileId": tileId,
-        "timestamp": row["timestamp"],
-        "userId": row["user_id"],
-        "count": 1.0
-    }
+    if row["source"] == "background":
+        return []
+    else:
+        return [{
+            "tileId": tileId,
+            "timestamp": row["timestamp"],
+            "userId": row["user_id"],
+            "count": 1.0
+        }]
 
 def build_timespan_label(timespanType, localDate):
     month = str(localDate.month)
@@ -62,7 +63,11 @@ def tile_id_timespans_mapper_for_zoom(zoom):
             timespanLabel = "alltime" # build_timespan_label(timespanType, location['datetime'])
             userGroups = ['all']
             if not location['userId'][:1] == 'x':
-                userGroups.append(location['userId'])
+                if location['userId'][:3] == 'rt-':
+                    userId = "route"
+                else:
+                    userId = location['userId']
+                userGroups.append(userId)
             for userId in userGroups:
                 tileTimespanMappings.append((
                     build_tile_composite_key(userId, tileId, timespanLabel),
@@ -99,19 +104,6 @@ def heatmap_to_locations(bucket):
         })
     return locations
 
-# sed -i '/rootCategory=WARN/ c\log4j.rootCategory=WARN, console' /opt/spark/conf/log4j.properties
-# bin/kafka-topics.sh --zookeeper 52.168.90.23:2181 --create --topic locations --partitions 3 --replication-factor 3
-# kubectl exec -it spark-master-1604325470-wr1v7 -n spark -- bash
-# mkdir develop && cd develop
-# git clone http://github.com/timfpark/rhom-data data
-# spark-submit --packages datastax:spark-cassandra-connector:2.0.1-s_2.11 --py-files tile.py heatmap.py
-# export CASSANDRA_ENDPOINT='cassandra-cassandra.cassandra.svc.cluster.local'
-# export KAFKA_ENDPOINT='zookeeper.kafka.svc.cluster.local'
-# export LOCATIONS_COSMOSDB_AUTH_KEY='L1SpNwr9BNVAAKgovnr50bZhc8t9HMvyD9sLbxNhJ9kz8Jn0kJIdAFLIdVHgHKe0Ce9dBOSwnF9juiDSAwVUaA=='
-# export LOCATIONS_COSMOSDB_HOST='https://rhom-locations-db.documents.azure.com:443/'
-# spark-submit --packages org.apache.spark:spark-streaming-kafka-0-8_2.11:2.0.2,datastax:spark-cassandra-connector:2.0.1-s_2.11 --py-files tile.py heatmap.py
-# spark-submit --jars azure-cosmosdb-spark-0.0.3-SNAPSHOT.jar,azure-documentdb-1.10.0.jar,json-20140107.jar --py-files tile.py heatmapCosmosDB.py
-
 def build_heatmaps(locations):
     heatmaps = None
     for zoom in range(MAX_ZOOM_LEVEL + DETAIL_ZOOM_DELTA, DETAIL_ZOOM_DELTA, -1):
@@ -137,9 +129,9 @@ def heatmap_to_json(heatmap):
     return json.dumps(heatmap)
 
 def get_rows(sc):
-    if os.environ["LOCATION_CASSANDRA_ENDPOINT"]:
+    if LOCATION_CASSANDRA_ENDPOINT:
         sc.stop()
-        conf = SparkConf(True).set("spark.cassandra.connection.host", os.environ["LOCATION_CASSANDRA_ENDPOINT"])
+        conf = SparkConf(True).set("spark.cassandra.connection.host", LOCATION_CASSANDRA_ENDPOINT)
         sc = SparkContext(conf=conf)
         sqlContext = SQLContext(sc)
         rows = sqlContext.read.format("org.apache.spark.sql.cassandra").options(table="locations", keyspace="rhom").load()
@@ -151,89 +143,21 @@ def get_rows(sc):
             "Database" : "locationsdb",
             "Collection" : "locations"
         }
-        rows = sqlContext.read.format("com.microsoft.azure.cosmosdb.spark").options(**locationsConfig).load()  
-    return sqlContext, rows  
+        rows = sqlContext.read.format("com.microsoft.azure.cosmosdb.spark").options(**locationsConfig).load()
+    return sqlContext, rows
 
 def write_heatmap_dataframes(heatmapDataFrames):
-    # if "LOCATIONS_COSMOSDB_HOST" in os.environ:
-    #    heatmapsConfig = {
-    #        "Endpoint" : os.environ["LOCATIONS_COSMOSDB_HOST"],
-    #        "Masterkey" : os.environ["LOCATIONS_COSMOSDB_AUTH_KEY"],
-    #        "Database" : "locationsdb",
-    #        "Collection" : "heatmaps"
-    #    }
-    #
-    #    heatmapDataFrames.write.format("com.microsoft.azure.cosmosdb.spark").mode('overwrite').options(**heatmapsConfig).save()
-
-    if "LOCATION_CASSANDRA_ENDPOINT" in os.environ:
-        heatmapDataFrames.write.format("org.apache.spark.sql.cassandra").mode('append').options(table='heatmaps',keyspace='rhom').save()
+    heatmapDataFrames.write.format("org.apache.spark.sql.cassandra").mode('append').options(table='heatmaps',keyspace='rhom').save()
 
 def batchMain(sc):
     sqlContext, rows = get_rows(sc)
-    locations = rows.rdd.map(dataframe_loader)
+    locations = rows.rdd.flatMap(dataframe_loader)
     heatmaps = build_heatmaps(locations)
     heatmapsMaterialized = heatmaps.mapValues(heatmap_to_json)
     heatmapDataFrames = sqlContext.createDataFrame(heatmapsMaterialized, ['id','heatmap'])
     return write_heatmap_dataframes(heatmapDataFrames)
 
-def kafka_json_loader(tuple):
-    try:
-        location = json.loads(tuple[VALUE_FIELD])
-        if location and location['latitude'] and location['longitude']:
-            location['tileId'] = Tile.tile_id_from_lat_long(location["latitude"], location["longitude"], MAX_ZOOM_LEVEL + DETAIL_ZOOM_DELTA)
-            location['count'] = 1.0
-            return [ location ]
-        else:
-            print "no location or latitude or longitude"
-            return []
-    except ValueError, e:
-        print "exception: " + str(tuple)
-        return []
-
-def merge_partial_heatmap(session, heatmapPartial):
-    id = heatmapPartial[KEY_FIELD]
-    heatmapPartial = heatmapPartial[VALUE_FIELD]
-    mergedHeatmap = {}
-    rows = session.execute("SELECT id, heatmap FROM rhom.heatmaps WHERE id='" + id + "'")
-    for row in rows:
-        mergedHeatmap = json.loads(row[1])
-    for tileId in heatmapPartial:
-        if tileId in mergedHeatmap:
-            mergedHeatmap[tileId] = mergedHeatmap[tileId] + heatmapPartial[tileId]
-        else:
-            mergedHeatmap[tileId] = heatmapPartial[tileId]
-    print "updating " + id
-    session.execute("INSERT INTO rhom.heatmaps (id, heatmap) VALUES (%s, %s)", (id, json.dumps(mergedHeatmap)))
-
-def merge_partial_heatmap_rdd(heatmapPartialRDD):
-    cluster = Cluster([os.environ["LOCATION_CASSANDRA_ENDPOINT"]])
-    session = cluster.connect()
-    for heatmapPartial in heatmapPartialRDD.collect():
-        merge_partial_heatmap(session, heatmapPartial)
-
-def merge_heatmap_partials(heatmapPartials):
-    heatmapPartials.foreachRDD(merge_partial_heatmap_rdd)
-
-def streamingMain(sc):
-    print "USING STREAMING: " + os.environ["KAFKA_ENDPOINT"]
-
-    sc.stop()
-    conf = SparkConf()
-    sc = SparkContext(conf=conf)
-    ssc = StreamingContext(sc, MICROBATCH_FREQUENCY_SECONDS)
-
-    rows = KafkaUtils.createStream(ssc, os.environ["KAFKA_ENDPOINT"], 'heatmap-streaming', {"locations": 1})
-    locations = rows.flatMap(kafka_json_loader)
-    heatmap_partials = build_heatmaps(locations)
-    merge_heatmap_partials(heatmap_partials)
-
-    ssc.start()
-    ssc.awaitTermination()
-
 if __name__ == "__main__":
     conf = SparkConf()
     sc = SparkContext(conf=conf)
-    if "USE_STREAMING" in os.environ and os.environ["USE_STREAMING"] == "true":
-        streamingMain(sc)
-    else:
-        batchMain(sc)
+    batchMain(sc)

@@ -1,6 +1,17 @@
 #!/bin/sh
-#export LOCATIONS_CASSANDRA_ENDPOINT='172.17.0.2'
-#export LOCATION_CASSANDRA_ENDPOINT='cassandra-cassandra.cassandra.svc.cluster.local'
-export LOCATIONS_COSMOSDB_AUTH_KEY='L1SpNwr9BNVAAKgovnr50bZhc8t9HMvyD9sLbxNhJ9kz8Jn0kJIdAFLIdVHgHKe0Ce9dBOSwnF9juiDSAwVUaA=='
-export LOCATIONS_COSMOSDB_HOST='https://rhom-locations-db.documents.azure.com:443/'
-spark-submit --master spark://spark-master.spark2.svc.cluster.local:7077 --num-executors 23 --executor-cores 1 --executor-memory 4g --packages org.apache.spark:spark-streaming-kafka-0-8_2.11:2.0.2,datastax:spark-cassandra-connector:2.0.1-s_2.11 --jars azure-cosmosdb-spark_2.2.0_2.11-0.0.3.jar,azure-documentdb-1.12.0.jar,azure-documentdb-rx-0.9.0-rc1.jar,rxjava-1.3.0.jar,json-20140107.jar --py-files tile.py heatmapCosmosDB.py
+
+bin/spark-submit \
+  --deploy-mode cluster \
+  --master k8s://https://spark.eastus2.cloudapp.azure.com \
+  --kubernetes-namespace default \
+  --conf spark.app.name=heatmap \
+  --conf spark.kubernetes.driver.docker.image=timfpark/heatmap-driver:v5 \
+  --conf spark.kubernetes.executor.docker.image=kubespark/spark-executor:v2.2.0-kubernetes-0.5.0 \
+  --conf spark.dynamicAllocation.enabled=true \
+  --conf spark.shuffle.service.enabled=true \
+  --conf spark.kubernetes.shuffle.namespace=default \
+  --conf spark.kubernetes.shuffle.labels="app=spark-shuffle-service,spark-version=2.2.0" \
+  --conf spark.local.dir="/mnt/spark" \
+  --jars local:///opt/spark/code/spark-cassandra-connector-2.0.5-s_2.11.jar \
+  --py-files local:///opt/spark/code/tile.py \
+  local:///opt/spark/code/heatmap.py
